@@ -1,0 +1,91 @@
+name: 'OWASP Dependency-Check (SCA)'
+description: 'Executa análise de dependências com OWASP Dependency-Check'
+author: 'Security Team'
+
+inputs:
+  nvd-api-key:
+    description: 'NVD API Key para Dependency-Check'
+    required: true
+  project-name:
+    description: 'Nome do projeto'
+    required: false
+    default: ${{ github.event.repository.name }}
+  scan-path:
+    description: 'Caminho para scan'
+    required: false
+    default: '.'
+  fail-on-error:
+    description: 'Falhar o pipeline em caso de vulnerabilidades críticas'
+    required: false
+    default: 'false'
+  output-formats:
+    description: 'Formatos de saída (HTML, JSON, XML)'
+    required: false
+    default: 'HTML,JSON,XML'
+
+outputs:
+  report-path:
+    description: 'Caminho do diretório com os relatórios'
+    value: ${{ steps.scan.outputs.report-path }}
+
+runs:
+  using: 'composite'
+  steps:
+  - name: Criar diretórios necessários
+    shell: bash
+    run: |
+      mkdir -p .odc-reports
+      mkdir -p $HOME/OWASP-Dependency-Check/data
+      mkdir -p $HOME/OWASP-Dependency-Check/data/cache
+      echo "📁 Diretórios criados com sucesso"
+
+  - name: Executar OWASP Dependency-Check
+    id: scan
+    shell: bash
+    run: |
+      echo "🔍 Iniciando Dependency-Check para: ${{ inputs.project-name }}"
+
+      docker run --rm \
+        -e user=$USER \
+        -u $(id -u ${USER}):$(id -g ${USER}) \
+        --volume $(pwd)/${{ inputs.scan-path }}:/src:z \
+        --volume $HOME/OWASP-Dependency-Check/data:/usr/share/dependency-check/data:z \
+        --volume $(pwd)/.odc-reports:/report:z \
+        owasp/dependency-check:latest \
+        --nvdApiKey "${{ inputs.nvd-api-key }}" \
+        --scan /src \
+        --format "${{ inputs.output-formats }}" \
+        --project "${{ inputs.project-name }}" \
+        --out /report \
+        || SCAN_FAILED=true
+
+      echo "report-path=.odc-reports" >> $GITHUB_OUTPUT
+
+      if [ "$SCAN_FAILED" = "true" ] && [ "${{ inputs.fail-on-error }}" = "true" ]; then
+        echo "❌ Dependency-Check encontrou problemas críticos"
+        exit 1
+      fi
+
+      echo "✅ Dependency-Check concluído"
+
+  - name: Upload Dependency-Check Reports
+    uses: actions/upload-artifact@v4
+    if: always()
+    with:
+      name: dependency-check-reports
+      path: .odc-reports/
+      retention-days: 30
+
+  - name: Exibir resumo
+    shell: bash
+    if: always()
+    run: |
+      echo "### 📊 Dependency-Check Report" >> $GITHUB_STEP_SUMMARY
+      echo "" >> $GITHUB_STEP_SUMMARY
+      echo "- **Projeto**: ${{ inputs.project-name }}" >> $GITHUB_STEP_SUMMARY
+      echo "- **Relatórios**: Disponíveis nos artifacts" >> $GITHUB_STEP_SUMMARY
+
+      if [ -f ".odc-reports/dependency-check-report.json" ]; then
+        TOTAL_DEPS=$(jq '.dependencies | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "N/A")
+        echo "- **Total de Dependências**: $TOTAL_DEPS" >> $GITHUB_STEP_SUMMARY
+      fi
