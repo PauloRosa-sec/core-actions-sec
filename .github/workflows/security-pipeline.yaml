@@ -1,0 +1,39 @@
+name: Security Pipeline (Reusable)
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      project-name:
+        description: 'Nome do projeto'
+        required: false
+        type: string
+        default: ${{ github.event.repository.name }}
+      branch-name:
+        description: 'Nome da branch'
+        required: false
+        type: string
+        default: ${{ github.ref_name }}
+
+jobs:
+  # Job 1: SCA - Dependency Check
+  dependency-check:
+    name: 🔍 SCA - Dependency Check
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-dependency-check }}
+    steps:
+    - name: Checkout código
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Executar OWASP Dependency-Check
+      uses: ./.github/actions/dependency-check
+      with:
+        nvd-api-key: ${{ secrets.NVD_API_KEY }}
+        project-name: ${{ inputs.project-name }}
+        fail-on-error: ${{ inputs.fail-on-vulnerabilities }}
