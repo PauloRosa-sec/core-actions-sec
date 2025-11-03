@@ -2,9 +2,9 @@ name: Security Pipeline (Reusable)
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "feature/dependecy-check" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "feature/dependecy-check" ]
   workflow_dispatch:
   workflow_call:
     inputs:
