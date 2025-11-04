@@ -23,7 +23,7 @@ jobs:
   # Job 1: SCA - Dependency Check
   dependency-check:
     name: 🔍 SCA - Dependency Check
-    runs-on: ubuntu-latests
+    runs-on: ubuntu-latest
     if: ${{ !inputs.skip-dependency-check }}
     steps:
     - name: Checkout código
