@@ -1,0 +1,229 @@
+name: 🔒 Security Scan with NVD Cache
+
+on:
+  push:
+    branches: 
+      - feature/dependecy-check
+  pull_request:
+    branches:
+      - feature/dependecy-check
+  workflow_dispatch:
+    inputs:
+      skip-cache:
+        description: 'Ignorar cache e baixar NVD do zero'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  dependency-check:
+    name: 🔍 OWASP Dependency Check
+    runs-on: ubuntu-latest
+    environment: STG
+    
+    permissions:
+      contents: read
+      security-events: write  # Para SARIF upload
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📦 Instalar dependências Python
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+            echo "✅ Dependências instaladas"
+          else
+            echo "⚠️ requirements.txt não encontrado"
+          fi
+      
+      - name: 📥 Carregar Cache NVD da branch gh-pages
+        if: github.event.inputs.skip-cache != 'true'
+        id: load-cache
+        run: |
+          echo "🔍 Verificando cache na branch gh-pages..."
+          
+          # Verificar se branch gh-pages existe
+          if git ls-remote --exit-code --heads origin gh-pages > /dev/null 2>&1; then
+            echo "✅ Branch gh-pages encontrada"
+            
+            # Fetch apenas o cache
+            git fetch origin gh-pages --depth=1
+            
+            # Tentar fazer checkout do diretório nvd_cache
+            if git checkout origin/gh-pages -- nvd_cache/ 2>/dev/null; then
+              if [ -d "nvd_cache" ] && [ "$(find nvd_cache -type f | wc -l)" -gt 5 ]; then
+                echo "📦 Cache encontrado! Copiando para diretório do Dependency-Check..."
+                
+                mkdir -p $HOME/OWASP-Dependency-Check/data
+                cp -r nvd_cache/* $HOME/OWASP-Dependency-Check/data/
+                
+                CACHE_SIZE=$(du -sh $HOME/OWASP-Dependency-Check/data | cut -f1)
+                FILE_COUNT=$(find $HOME/OWASP-Dependency-Check/data -type f | wc -l)
+                
+                echo "cache-loaded=true" >> $GITHUB_OUTPUT
+                echo "cache-size=$CACHE_SIZE" >> $GITHUB_OUTPUT
+                echo "cache-files=$FILE_COUNT" >> $GITHUB_OUTPUT
+                
+                echo "✅ Cache carregado com sucesso!"
+                echo "   - Tamanho: $CACHE_SIZE"
+                echo "   - Arquivos: $FILE_COUNT"
+                
+                if [ -f "$HOME/OWASP-Dependency-Check/data/cache.properties" ]; then
+                  echo "   - Data do cache:"
+                  grep "lastModified" $HOME/OWASP-Dependency-Check/data/cache.properties | head -3 || true
+                fi
+              else
+                echo "cache-loaded=false" >> $GITHUB_OUTPUT
+                echo "⚠️ Cache vazio ou inválido"
+              fi
+            else
+              echo "cache-loaded=false" >> $GITHUB_OUTPUT
+              echo "⚠️ Diretório nvd_cache não encontrado na branch gh-pages"
+            fi
+          else
+            echo "cache-loaded=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Branch gh-pages não existe"
+            echo ""
+            echo "💡 Para criar o cache:"
+            echo "   1. Vá em Actions → Update NVD Cache"
+            echo "   2. Clique em 'Run workflow'"
+            echo "   3. Aguarde a conclusão (10-15 minutos)"
+          fi
+          
+          if [ "${{ steps.load-cache.outputs.cache-loaded }}" != "true" ]; then
+            echo ""
+            echo "⚠️ Executando sem cache (será mais lento)"
+          fi
+      
+      - name: 🔒 OWASP Dependency Check
+        uses: ./.github/actions/dependency-check
+        id: depcheck
+        with:
+          nvd-api-key: ${{ secrets.NVD_API_KEY }}
+          project: ${{ github.event.repository.name }}
+          scan-path: '.'
+          output-formats: 'HTML,JSON,XML,SARIF'
+          fail-on-cvss: '7'
+          fail-on-error: 'false'
+      
+      - name: 📊 Análise Detalhada de Vulnerabilidades
+        if: always()
+        shell: bash
+        run: |
+          echo "### 📊 Security Scan Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Informações do cache
+          if [ "${{ steps.load-cache.outputs.cache-loaded }}" == "true" ]; then
+            echo "**📦 Cache NVD:** ✅ Usado (Tamanho: ${{ steps.load-cache.outputs.cache-size }}, Arquivos: ${{ steps.load-cache.outputs.cache-files }})" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**📦 Cache NVD:** ⚠️ Não usado (dados baixados durante o scan)" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f ".odc-reports/dependency-check-report.json" ]; then
+            # Extrair estatísticas
+            TOTAL_DEPS=$(jq '.dependencies | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            CRITICAL=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="CRITICAL")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="HIGH")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="MEDIUM")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            LOW=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="LOW")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            TOTAL_VULNS=$((CRITICAL + HIGH + MEDIUM + LOW))
+            
+            echo "#### 📈 Resumo de Vulnerabilidades" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Severidade | Quantidade |" >> $GITHUB_STEP_SUMMARY
+            echo "|-----------|------------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 📦 **Total de Dependências** | **$TOTAL_DEPS** |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 **Críticas (CVSS ≥ 9.0)** | **$CRITICAL** |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 **Altas (CVSS 7.0-8.9)** | **$HIGH** |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 Médias (CVSS 4.0-6.9) | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 Baixas (CVSS < 4.0) | $LOW |" >> $GITHUB_STEP_SUMMARY
+            echo "| 📊 **Total de Vulnerabilidades** | **$TOTAL_VULNS** |" >> $GITHUB_STEP_SUMMARY
+            
+            # Alertas para vulnerabilidades críticas
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### 🚨 ALERTA: Vulnerabilidades Críticas!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Foram encontradas **$CRITICAL vulnerabilidade(s) CRÍTICA(S)** (CVSS ≥ 9.0)!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Ação requerida:** Revise e corrija imediatamente." >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              
+              # Listar CVEs críticos (top 5)
+              echo "#### Top 5 CVEs Críticos:" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              jq -r '.dependencies[]?.vulnerabilities[]? | select(.severity=="CRITICAL") | "- **\(.name)** - CVSS: \(.cvssv3?.baseScore // .cvssv2?.score // "N/A") - \(.description[0:100])..."' .odc-reports/dependency-check-report.json 2>/dev/null | head -5 >> $GITHUB_STEP_SUMMARY || true
+            elif [ "$HIGH" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### ⚠️ Atenção: Vulnerabilidades Altas" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Foram encontradas **$HIGH vulnerabilidade(s) ALTA(S)** (CVSS 7.0-8.9)." >> $GITHUB_STEP_SUMMARY
+              echo "Recomenda-se revisar e corrigir quando possível." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### ✅ Nenhuma Vulnerabilidade Crítica ou Alta!" >> $GITHUB_STEP_SUMMARY
+            fi
+            
+            # Listar dependências mais vulneráveis
+            if [ "$TOTAL_VULNS" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "#### 📦 Top 5 Dependências Mais Vulneráveis:" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              jq -r '.dependencies[] | select(.vulnerabilities) | "\(.fileName): \(.vulnerabilities | length) vuln(s)"' .odc-reports/dependency-check-report.json 2>/dev/null | sort -t: -k2 -rn | head -5 | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY || true
+            fi
+          else
+            echo "⚠️ **Status:** Relatório JSON não encontrado" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "📄 **Relatórios completos disponíveis nos Artifacts**" >> $GITHUB_STEP_SUMMARY
+      
+      # Upload para GitHub Security (SARIF)
+      - name: 🔐 Upload SARIF para GitHub Security
+        if: always() && hashFiles('.odc-reports/dependency-check-report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: .odc-reports/dependency-check-report.sarif
+          category: dependency-check
+        continue-on-error: true
+      
+      - name: 📤 Upload Relatórios
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-reports-${{ github.run_number }}
+          path: .odc-reports/
+          retention-days: 30
+      
+      - name: ❌ Verificar e Falhar em Vulnerabilidades Críticas
+        if: always()
+        shell: bash
+        run: |
+          if [ -f ".odc-reports/dependency-check-report.json" ]; then
+            CRITICAL=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="CRITICAL")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "❌ FALHA: $CRITICAL vulnerabilidade(s) CRÍTICA(S) encontrada(s)!"
+              echo "Pipeline configurado para alertar, mas não falhar."
+              echo "Para falhar o pipeline, altere 'fail-on-error' para 'true'"
+              # Descomente para FALHAR o pipeline:
+              # exit 1
+            else
+              echo "✅ Nenhuma vulnerabilidade crítica encontrada"
+            fi
+          fi

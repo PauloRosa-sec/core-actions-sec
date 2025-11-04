@@ -1,0 +1,186 @@
+name: 🔄 Update NVD Cache
+
+on:
+  schedule:
+    # Executa todo dia às 11:00 UTC (8:00 AM Brasília)
+    - cron: '0 11 * * *'
+  workflow_dispatch:  # Permite execução manual
+    inputs:
+      force-update:
+        description: 'Forçar atualização completa (ignorar cache existente)'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  update-nvd-cache:
+    name: 📦 Atualizar Cache NVD
+    runs-on: ubuntu-latest
+    environment: STG
+    permissions:
+      contents: write
+    
+    steps:
+      - name: 📥 Checkout branch gh-pages
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: gh-pages
+        continue-on-error: true  # Se gh-pages não existe, continua
+      
+      - name: 🔧 Criar branch gh-pages se não existir
+        run: |
+          if ! git show-ref --verify --quiet refs/heads/gh-pages; then
+            echo "⚠️ Branch gh-pages não existe. Criando..."
+            git checkout --orphan gh-pages
+            git rm -rf . 2>/dev/null || true
+            echo "# NVD Cache Storage" > README.md
+            echo "Este branch armazena o cache do NVD Database para acelerar scans de segurança." >> README.md
+            echo "" >> README.md
+            echo "**Não modifique manualmente!** Este conteúdo é gerenciado automaticamente." >> README.md
+            git add README.md
+            git config user.email "actions@github.com"
+            git config user.name "GitHub Actions"
+            git commit -m "chore: inicializar branch gh-pages"
+            git push origin gh-pages
+            echo "✅ Branch gh-pages criada"
+          else
+            echo "✅ Branch gh-pages já existe"
+          fi
+      
+      - name: ☕ Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: 🔍 Verificar cache existente
+        id: check-cache
+        run: |
+          if [ -d "nvd_cache" ] && [ "$(find nvd_cache -type f | wc -l)" -gt 5 ]; then
+            echo "cache-exists=true" >> $GITHUB_OUTPUT
+            CACHE_SIZE=$(du -sh nvd_cache | cut -f1)
+            FILE_COUNT=$(find nvd_cache -type f | wc -l)
+            echo "✅ Cache existente encontrado:"
+            echo "   - Tamanho: $CACHE_SIZE"
+            echo "   - Arquivos: $FILE_COUNT"
+            
+            if [ -f "nvd_cache/cache.properties" ]; then
+              echo "   - Última atualização:"
+              grep "lastModified" nvd_cache/cache.properties | head -3 || true
+            fi
+          else
+            echo "cache-exists=false" >> $GITHUB_OUTPUT
+            echo "⚠️ Cache não encontrado ou vazio"
+          fi
+      
+      - name: 🔄 Atualizar Cache NVD
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          echo "📥 Baixando ferramenta vulnz (Open Vulnerability CLI)..."
+          curl -sL https://github.com/jeremylong/open-vulnerability-cli/releases/download/v9.0.0/vulnz-9.0.0.jar -o vulnz.jar
+          
+          if [ "${{ github.event.inputs.force-update }}" == "true" ]; then
+            echo "🗑️ Removendo cache antigo (force update)..."
+            rm -rf nvd_cache
+          fi
+          
+          if [ "${{ steps.check-cache.outputs.cache-exists }}" == "true" ] && [ "${{ github.event.inputs.force-update }}" != "true" ]; then
+            echo "🔄 Atualizando cache existente..."
+            git reset --soft HEAD~1 || true
+          else
+            echo "📦 Criando cache do zero..."
+            mkdir -p nvd_cache
+          fi
+          
+          echo ""
+          echo "⏳ Baixando dados do NVD (isso pode levar 10-15 minutos)..."
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          java -jar vulnz.jar cve \
+            --cache \
+            --directory ./nvd_cache \
+            --requestCount=30 \
+            --debug \
+            --delay=8000 \
+            --maxRetry=40 || {
+              echo "❌ Erro ao baixar dados do NVD"
+              echo "Verifique se a NVD_API_KEY está configurada corretamente"
+              exit 1
+            }
+          
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Download concluído!"
+          echo ""
+          
+          rm -f vulnz.jar
+          
+          echo "📊 Informações do cache:"
+          CACHE_SIZE=$(du -sh ./nvd_cache | cut -f1)
+          FILE_COUNT=$(find ./nvd_cache -type f | wc -l)
+          echo "   - Tamanho: $CACHE_SIZE"
+          echo "   - Arquivos: $FILE_COUNT"
+          
+          if [ -f "nvd_cache/cache.properties" ]; then
+            echo ""
+            echo "📋 Propriedades do cache:"
+            cat nvd_cache/cache.properties
+          fi
+      
+      - name: 📤 Commit e Push do cache
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          
+          git add nvd_cache/
+          git add README.md || true
+          
+          if git diff --staged --quiet; then
+            echo "ℹ️ Nenhuma mudança detectada no cache"
+            echo "O cache já está atualizado"
+          else
+            COMMIT_MSG="chore: atualizar cache NVD - $(date +'%Y-%m-%d %H:%M UTC')"
+            
+            if [ "${{ github.event.inputs.force-update }}" == "true" ]; then
+              COMMIT_MSG="$COMMIT_MSG (force update)"
+            fi
+            
+            git commit -m "$COMMIT_MSG"
+            git push origin gh-pages --force
+            echo "✅ Cache atualizado e publicado com sucesso!"
+          fi
+      
+      - name: 📊 Resumo da Atualização
+        if: always()
+        run: |
+          echo "### 📦 Atualização do Cache NVD" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Data:** $(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -d "nvd_cache" ]; then
+            CACHE_SIZE=$(du -sh nvd_cache | cut -f1)
+            FILE_COUNT=$(find nvd_cache -type f | wc -l)
+            
+            echo "| Métrica | Valor |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 📦 Tamanho do Cache | $CACHE_SIZE |" >> $GITHUB_STEP_SUMMARY
+            echo "| 📂 Total de Arquivos | $FILE_COUNT |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🌿 Branch | gh-pages |" >> $GITHUB_STEP_SUMMARY
+            echo "| ⚡ Status | ✅ Atualizado |" >> $GITHUB_STEP_SUMMARY
+            
+            if [ -f "nvd_cache/cache.properties" ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**Última modificação:**" >> $GITHUB_STEP_SUMMARY
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+              grep "lastModified" nvd_cache/cache.properties | head -5 >> $GITHUB_STEP_SUMMARY || true
+              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "❌ **Status:** Falha ao criar cache" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "*Este cache é usado automaticamente pelos workflows de security scan*" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,129 @@
+name: 'OWASP Dependency-Check (SCA)'
+description: 'Executa análise de dependências com OWASP Dependency-Check'
+author: 'Security Team'
+
+inputs:
+  nvd-api-key:
+    description: 'NVD API Key para Dependency-Check'
+    required: true
+  project-name:
+    description: 'Nome do projeto'
+    required: false
+    default: ${{ github.event.repository.name }}
+  scan-path:
+    description: 'Caminho para scan'
+    required: false
+    default: '.'
+  fail-on-error:
+    description: 'Falhar o pipeline em caso de vulnerabilidades críticas'
+    required: false
+    default: 'false'
+  output-formats:
+    description: 'Formatos de saída (HTML, JSON, XML)'
+    required: false
+    default: 'HTML,JSON,XML'
+
+outputs:
+  report-path:
+    description: 'Caminho do diretório com os relatórios'
+    value: ${{ steps.scan.outputs.report-path }}
+
+runs:
+  using: 'composite'
+  steps:
+  - name: Criar diretórios necessários
+    shell: bash
+    run: |
+      mkdir -p .odc-reports
+      mkdir -p $HOME/OWASP-Dependency-Check/data
+      mkdir -p $HOME/OWASP-Dependency-Check/data/cache
+      echo "📁 Diretórios criados com sucesso"
+
+  - name: 📦 Verificar cache NVD existente
+    shell: bash
+    run: |
+      echo "### 📦 Status do Cache NVD" >> $GITHUB_STEP_SUMMARY
+      if [ -d "$HOME/OWASP-Dependency-Check/data" ]; then
+        CACHE_SIZE=$(du -sh $HOME/OWASP-Dependency-Check/data | cut -f1)
+        FILE_COUNT=$(find $HOME/OWASP-Dependency-Check/data -type f | wc -l)
+        echo "- **Status**: ✅ Cache existe" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tamanho**: $CACHE_SIZE" >> $GITHUB_STEP_SUMMARY
+        echo "- **Arquivos**: $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$FILE_COUNT" -lt 5 ]; then
+          echo "- **⚠️ Aviso**: Cache parece vazio, será baixado novamente" >> $GITHUB_STEP_SUMMARY
+        fi
+      else
+        echo "- **Status**: ⚠️ Cache não existe (será criado)" >> $GITHUB_STEP_SUMMARY
+      fi
+
+  - name: Executar OWASP Dependency-Check
+    id: scan
+    shell: bash
+    run: |
+      echo "🔍 Iniciando Dependency-Check para: ${{ inputs.project-name }}"
+      echo "📂 Scan path: ${{ inputs.scan-path }}"
+      echo "🗂️ Diretório atual: $(pwd)"
+      echo "📋 Arquivos no diretório:"
+      ls -la ${{ inputs.scan-path }}
+
+      docker run --rm \
+        -e user=$USER \
+        -u $(id -u ${USER}):$(id -g ${USER}) \
+        --volume $(pwd)/${{ inputs.scan-path }}:/src:z \
+        --volume $HOME/OWASP-Dependency-Check/data:/usr/share/dependency-check/data:z \
+        --volume $(pwd)/.odc-reports:/report:z \
+        owasp/dependency-check:latest \
+        --nvdApiKey "${{ inputs.nvd-api-key }}" \
+        --scan /src \
+        -f HTML \
+        -f JSON \
+        -f XML \
+        --project "${{ inputs.project-name }}" \
+        --out /report \
+        --log /report/dependency-check.log \
+        -v 
+
+      EXIT_CODE=$?
+      set -e  # Voltar a sair em caso de erro
+
+      echo ""
+      echo "📊 Exit Code: $EXIT_CODE"
+      echo "📊 Relatórios gerados:"
+      ls -lah .odc-reports/ || echo "⚠️ Nenhum relatório encontrado"
+
+      echo ""
+      echo "=== CONTEÚDO DO LOG ==="
+      cat .odc-reports/dependency-check.log || echo "❌ Não foi possível ler o log"
+
+      echo "report-path=.odc-reports" >> $GITHUB_OUTPUT
+
+      # Verificar se houve falha crítica
+      if [ $EXIT_CODE -ne 0 ] && [ "${{ inputs.fail-on-error }}" = "true" ]; then
+          echo "❌ Dependency-Check encontrou problemas críticos (Exit Code: $EXIT_CODE)"
+        exit 1
+      fi
+
+      echo "✅ Dependency-Check concluído (Exit Code: $EXIT_CODE)"
+
+  - name: Upload Dependency-Check Reports
+    uses: actions/upload-artifact@v4
+    if: always()
+    with:
+      name: dependency-check-reports
+      path: .odc-reports/
+      retention-days: 30
+
+  - name: Exibir resumo
+    shell: bash
+    if: always()
+    run: |
+      echo "### 📊 Dependency-Check Report" >> $GITHUB_STEP_SUMMARY
+      echo "" >> $GITHUB_STEP_SUMMARY
+      echo "- **Projeto**: ${{ inputs.project-name }}" >> $GITHUB_STEP_SUMMARY
+      echo "- **Relatórios**: Disponíveis nos artifacts" >> $GITHUB_STEP_SUMMARY
+
+      if [ -f ".odc-reports/dependency-check-report.json" ]; then
+        TOTAL_DEPS=$(jq '.dependencies | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "N/A")
+        echo "- **Total de Dependências**: $TOTAL_DEPS" >> $GITHUB_STEP_SUMMARY
+      fi
