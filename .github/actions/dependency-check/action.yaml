@@ -38,6 +38,7 @@ runs:
       mkdir -p $HOME/OWASP-Dependency-Check/data
       mkdir -p $HOME/OWASP-Dependency-Check/data/cache
       echo "📁 Diretórios criados com sucesso"
+
   - name: Executar OWASP Dependency-Check
     id: scan
     shell: bash
@@ -63,21 +64,43 @@ runs:
         --project "${{ inputs.project-name }}" \
         --out /report \
         --log /report/dependency-check.log \
-        -v \
-        || SCAN_FAILED=true
+        -v 
+
+      EXIT_CODE=$?
+      set -e  # Voltar a sair em caso de erro
 
       echo ""
+      echo "📊 Exit Code: $EXIT_CODE"
       echo "📊 Relatórios gerados:"
       ls -lah .odc-reports/ || echo "⚠️ Nenhum relatório encontrado"
 
+      echo ""
+      echo "=== CONTEÚDO DO LOG ==="
+      cat .odc-reports/dependency-check.log || echo "❌ Não foi possível ler o log"
+
       echo "report-path=.odc-reports" >> $GITHUB_OUTPUT
 
-      if [ "$SCAN_FAILED" = "true" ] && [ "${{ inputs.fail-on-error }}" = "true" ]; then
-        echo "❌ Dependency-Check encontrou problemas críticos"
+      # Verificar se houve falha crítica
+      if [ $EXIT_CODE -ne 0 ] && [ "${{ inputs.fail-on-error }}" = "true" ]; then
+          echo "❌ Dependency-Check encontrou problemas críticos (Exit Code: $EXIT_CODE)"
         exit 1
       fi
 
-      echo "✅ Dependency-Check concluído"
+      echo "✅ Dependency-Check concluído (Exit Code: $EXIT_CODE)"
+
+  - name: Verificar cache NVD
+    shell: bash
+    run: |
+      echo "### 📦 Cache NVD" >> $GITHUB_STEP_SUMMARY
+        if [ -d "$HOME/OWASP-Dependency-Check/data" ]; then
+            echo "✅ Diretório de cache existe" >> $GITHUB_STEP_SUMMARY
+            echo "📊 Tamanho do cache:" >> $GITHUB_STEP_SUMMARY
+            du -sh $HOME/OWASP-Dependency-Check/data >> $GITHUB_STEP_SUMMARY
+            echo "📁 Arquivos:" >> $GITHUB_STEP_SUMMARY
+            ls -lh $HOME/OWASP-Dependency-Check/data | head -20 >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Cache NVD não encontrado" >> $GITHUB_STEP_SUMMARY
+        fi
 
   - name: Upload Dependency-Check Reports
     uses: actions/upload-artifact@v4
