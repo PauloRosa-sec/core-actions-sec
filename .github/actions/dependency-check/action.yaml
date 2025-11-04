@@ -81,5 +81,5 @@ runs:
         else
           echo "❌ Relatório NÃO foi gerado!"
       fi
-  env:
-    NVD_KEY: ${{ secrets.NVD_API_KEY }}
+    env:
+      NVD_KEY: ${{ secrets.NVD_API_KEY }}
