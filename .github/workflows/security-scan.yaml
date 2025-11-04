@@ -1,0 +1,149 @@
+name: 🔒 Security Scan with Dependency-Check
+on:
+  push:
+    branches: 
+      - feature/dependency-check
+  pull_request:
+    branches:
+      - feature/dependency-check
+  workflow_dispatch:  # Permite execução manual
+
+jobs:
+  dependency-check-scan:
+    runs-on: ubuntu-latest
+    name: 🔍 Dependency Check Scan
+    environment: STG  # ← Seu environment com a NVD_API_KEY
+    
+    steps:
+      - name: 📥 Checkout código
+        uses: actions/checkout@v4
+      
+      # Se seu projeto precisar de build (Maven, Gradle, npm, etc)
+      # Descomente e adapte conforme necessário:
+      
+      # Para Java/Maven:
+      # - name: ☕ Setup Java
+      #   uses: actions/setup-java@v4
+      #   with:
+      #     java-version: '17'
+      #     distribution: 'temurin'
+      
+      # - name: 🔨 Build com Maven
+      #   run: mvn clean install -DskipTests
+      
+      # Para Node.js:
+      # - name: 🟢 Setup Node.js
+      #   uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '18'
+      
+      # - name: 📦 Install dependencies
+      #   run: npm ci
+      
+      # Para Python (seu caso):
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: 📦 Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+      
+      # Executar sua custom action
+      - name: 🔒 OWASP Dependency Check
+        uses: ./.github/actions/dependency-check
+        id: depcheck
+        with:
+          nvd-api-key: ${{ secrets.NVD_API_KEY }}
+          project: ${{ github.event.repository.name }}
+          scan-path: '.'
+          output-formats: 'HTML,JSON,XML'
+          fail-on-cvss: '7'  # Falha se CVSS >= 7
+          fail-on-error: 'false'  # Não falha o pipeline (apenas alerta)
+      
+      # Análise detalhada dos resultados
+      - name: 📊 Análise de Vulnerabilidades
+        if: always()
+        shell: bash
+        run: |
+          echo "### 📊 Análise Detalhada de Vulnerabilidades" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f ".odc-reports/dependency-check-report.json" ]; then
+            # Estatísticas
+            TOTAL_DEPS=$(jq '.dependencies | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            CRITICAL=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="CRITICAL")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="HIGH")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            MEDIUM=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="MEDIUM")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            LOW=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="LOW")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            TOTAL_VULNS=$((CRITICAL + HIGH + MEDIUM + LOW))
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "#### 📈 Resumo" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Métrica | Valor |" >> $GITHUB_STEP_SUMMARY
+            echo "|---------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 📦 Total de Dependências | $TOTAL_DEPS |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 **Vulnerabilidades Críticas** | **$CRITICAL** |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 Vulnerabilidades Altas | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 Vulnerabilidades Médias | $MEDIUM |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 Vulnerabilidades Baixas | $LOW |" >> $GITHUB_STEP_SUMMARY
+            echo "| 📊 **Total** | **$TOTAL_VULNS** |" >> $GITHUB_STEP_SUMMARY
+            
+            # Alerta para vulnerabilidades críticas
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "### ⚠️ ALERTA: Vulnerabilidades Críticas Encontradas!" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Foram encontradas **$CRITICAL vulnerabilidade(s) CRÍTICA(S)**!" >> $GITHUB_STEP_SUMMARY
+              echo "Por favor, revise o relatório detalhado nos artifacts." >> $GITHUB_STEP_SUMMARY
+              
+              # Listar CVEs críticos
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "#### 🔴 CVEs Críticos:" >> $GITHUB_STEP_SUMMARY
+              jq -r '.dependencies[]?.vulnerabilities[]? | select(.severity=="CRITICAL") | "- **\(.name)** (CVSS: \(.cvssv3?.baseScore // .cvssv2?.score // "N/A")): \(.description // "Sem descrição")[0:100]..."' .odc-reports/dependency-check-report.json 2>/dev/null | head -10 >> $GITHUB_STEP_SUMMARY || true
+            fi
+            
+            # Listar dependências vulneráveis
+            if [ "$TOTAL_VULNS" -gt 0 ]; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "#### 📦 Top 5 Dependências Mais Vulneráveis:" >> $GITHUB_STEP_SUMMARY
+              jq -r '.dependencies[] | select(.vulnerabilities) | "\(.fileName): \(.vulnerabilities | length) vulnerabilidade(s)"' .odc-reports/dependency-check-report.json 2>/dev/null | sort -t: -k2 -rn | head -5 | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY || true
+            fi
+          else
+            echo "⚠️ Relatório JSON não encontrado" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      # Upload adicional dos relatórios (além do que já está na action)
+      - name: 📤 Upload Relatórios Dependency-Check
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-reports-${{ github.run_number }}
+          path: .odc-reports/
+          retention-days: 30
+      
+      # (Opcional) Falhar se houver vulnerabilidades críticas
+      - name: ❌ Verificar Vulnerabilidades Críticas
+        if: always()
+        shell: bash
+        run: |
+          if [ -f ".odc-reports/dependency-check-report.json" ]; then
+            CRITICAL=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="CRITICAL")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            HIGH=$(jq '[.dependencies[]?.vulnerabilities[]? | select(.severity=="HIGH")] | length' .odc-reports/dependency-check-report.json 2>/dev/null || echo "0")
+            
+            if [ "$CRITICAL" -gt 0 ]; then
+              echo "❌ FALHA: $CRITICAL vulnerabilidade(s) CRÍTICA(S) encontrada(s)!"
+              echo "Por favor, corrija as vulnerabilidades críticas antes de prosseguir."
+              # Descomente a linha abaixo para FALHAR o pipeline:
+              # exit 1
+            elif [ "$HIGH" -gt 0 ]; then
+              echo "⚠️ AVISO: $HIGH vulnerabilidade(s) ALTA(S) encontrada(s)!"
+              echo "Recomenda-se corrigir essas vulnerabilidades."
+            else
+              echo "✅ Nenhuma vulnerabilidade crítica ou alta encontrada!"
+            fi
+          fi
