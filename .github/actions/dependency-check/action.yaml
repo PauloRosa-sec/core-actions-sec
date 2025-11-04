@@ -39,6 +39,24 @@ runs:
       mkdir -p $HOME/OWASP-Dependency-Check/data/cache
       echo "📁 Diretórios criados com sucesso"
 
+  - name: 📦 Verificar cache NVD existente
+    shell: bash
+    run: |
+      echo "### 📦 Status do Cache NVD" >> $GITHUB_STEP_SUMMARY
+      if [ -d "$HOME/OWASP-Dependency-Check/data" ]; then
+        CACHE_SIZE=$(du -sh $HOME/OWASP-Dependency-Check/data | cut -f1)
+        FILE_COUNT=$(find $HOME/OWASP-Dependency-Check/data -type f | wc -l)
+        echo "- **Status**: ✅ Cache existe" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tamanho**: $CACHE_SIZE" >> $GITHUB_STEP_SUMMARY
+        echo "- **Arquivos**: $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "$FILE_COUNT" -lt 5 ]; then
+          echo "- **⚠️ Aviso**: Cache parece vazio, será baixado novamente" >> $GITHUB_STEP_SUMMARY
+        fi
+      else
+        echo "- **Status**: ⚠️ Cache não existe (será criado)" >> $GITHUB_STEP_SUMMARY
+      fi
+
   - name: Executar OWASP Dependency-Check
     id: scan
     shell: bash
@@ -87,20 +105,6 @@ runs:
       fi
 
       echo "✅ Dependency-Check concluído (Exit Code: $EXIT_CODE)"
-
-  - name: Verificar cache NVD
-    shell: bash
-    run: |
-      echo "### 📦 Cache NVD" >> $GITHUB_STEP_SUMMARY
-        if [ -d "$HOME/OWASP-Dependency-Check/data" ]; then
-            echo "✅ Diretório de cache existe" >> $GITHUB_STEP_SUMMARY
-            echo "📊 Tamanho do cache:" >> $GITHUB_STEP_SUMMARY
-            du -sh $HOME/OWASP-Dependency-Check/data >> $GITHUB_STEP_SUMMARY
-            echo "📁 Arquivos:" >> $GITHUB_STEP_SUMMARY
-            ls -lh $HOME/OWASP-Dependency-Check/data | head -20 >> $GITHUB_STEP_SUMMARY
-          else
-            echo "❌ Cache NVD não encontrado" >> $GITHUB_STEP_SUMMARY
-        fi
 
   - name: Upload Dependency-Check Reports
     uses: actions/upload-artifact@v4

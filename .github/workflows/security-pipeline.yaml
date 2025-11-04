@@ -31,21 +31,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-
-
-    - name: Debug - Verificar Environment e Secrets
-      shell: bash
-      run: |
-        echo "🌍 Environment: ${{ github.environment }}"
-        echo "🔐 NVD API Key disponível: ${{ secrets.NVD_API_KEY != '' }}"
-            if [ -n "${{ secrets.NVD_API_KEY }}" ]; then
-                echo "✅ NVD API Key está configurada (${#{{ secrets.NVD_API_KEY }}} caracteres)"
-              else
-                echo "❌ NVD API Key NÃO está disponível!"
-            fi
-
-
-
+        
     - name: Executar OWASP Dependency-Check
       uses: ./.github/actions/dependency-check
       with:
