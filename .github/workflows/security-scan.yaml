@@ -2,10 +2,10 @@ name: 🔒 Security Scan with Dependency-Check
 on:
   push:
     branches: 
-      - feature/dependency-check
+      - feature/dependecy-check
   pull_request:
     branches:
-      - feature/dependency-check
+      - feature/dependecy-check
   workflow_dispatch:  # Permite execução manual agora
 
 jobs:
