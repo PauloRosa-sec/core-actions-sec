@@ -17,7 +17,7 @@ on:
 
 jobs:
   dependency-check:
-    name: 🔍 OWASP Dependency Check
+    name: 🔍 OWASP Dependency Check1
     runs-on: ubuntu-latest
     environment: STG
     

@@ -79,7 +79,7 @@ runs:
         echo "- **Ação**: Será baixado durante o scan" >> $GITHUB_STEP_SUMMARY
       fi
 
-  - name: 🔍 Executar OWASP Dependency-Check
+  - name: 🔍 Executar OWASP Dependency-Check1
     id: scan
     shell: bash
     run: |
