@@ -35,5 +35,6 @@ jobs:
       uses: ./.github/actions/dependency-check
       with:
         nvd-api-key: ${{ secrets.NVD_API_KEY }}
-        project-name: ${{ inputs.project-name }}
+        project-name: ${{ github.event.repository.name }}
+        scan-path: '.'
         fail-on-error: ${{ inputs.fail-on-vulnerabilities }}
